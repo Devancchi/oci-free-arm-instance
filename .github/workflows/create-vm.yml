@@ -1,8 +1,8 @@
 name: Try to Create OCI VM
-# Loop-retry tiap 60 detik per run (maks ~25 menit), heartbeat Discord tiap ~10 menit.
+# Loop ~5.5 jam per run (retry tiap 60s), heartbeat Discord tiap ~11 menit. Cron restart kalau run selesai.
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -23,7 +23,7 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 350
     steps:
       - name: Add OCI CLI to path
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -47,8 +47,10 @@ jobs:
           WEBHOOK="${{ secrets.DISCORD_WEBHOOK_URL }}"
           notify() { curl -s -H "Content-Type: application/json" -X POST -d "$(jq -nc --arg c "$1" '{content:$c}')" "$WEBHOOK" >/dev/null 2>&1 || true; }
 
-          MAX_MIN=25
-          HEARTBEAT_EVERY=10
+          notify "Run baru mulai hunting kapasitas Batam (nonstop ~5.5 jam). Heartbeat tiap ~11 menit."
+
+          MAX_MIN=330
+          HEARTBEAT_EVERY=4
           ATTEMPT=0
           END=$(( $(date +%s) + MAX_MIN*60 ))
           while [ "$(date +%s)" -lt "$END" ]; do
@@ -71,9 +73,9 @@ jobs:
             fi
             MSG=$(echo "$OUT" | grep -o '"message": "[^"]*"' | head -1 | sed 's/"message": //; s/"//g')
             if [ $((ATTEMPT % HEARTBEAT_EVERY)) -eq 0 ]; then
-              notify "Masih hunting kapasitas Batam (attempt #$ATTEMPT, run masih jalan). Terakhir: ${MSG:-unknown}"
+              notify "Masih hunting Batam (attempt #$ATTEMPT, run jalan). Terakhir: ${MSG:-unknown}"
             fi
             sleep 60
           done
-          notify "Run selesai (${ATTEMPT}x attempt, belum dapat slot). Run berikutnya lanjut otomatis."
-          echo "no capacity this run after $ATTEMPT attempts"
+          notify "Run 5.5 jam selesai (${ATTEMPT}x attempt, belum dapat). Run berikutnya lanjut otomatis."
+          echo "no capacity after $ATTEMPT attempts"
