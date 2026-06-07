@@ -47,10 +47,10 @@ jobs:
           WEBHOOK="${{ secrets.DISCORD_WEBHOOK_URL }}"
           notify() { curl -s -H "Content-Type: application/json" -X POST -d "$(jq -nc --arg c "$1" '{content:$c}')" "$WEBHOOK" >/dev/null 2>&1 || true; }
 
-          notify "Run baru mulai hunting kapasitas Batam (nonstop ~5.5 jam). Heartbeat tiap ~11 menit."
+          notify "Run baru mulai hunting kapasitas Batam (nonstop ~5.5 jam). Retry tiap 3 menit (anti rate-limit), heartbeat tiap ~10 menit."
 
           MAX_MIN=330
-          HEARTBEAT_EVERY=4
+          HEARTBEAT_EVERY=3
           ATTEMPT=0
           END=$(( $(date +%s) + MAX_MIN*60 ))
           while [ "$(date +%s)" -lt "$END" ]; do
@@ -75,7 +75,7 @@ jobs:
             if [ $((ATTEMPT % HEARTBEAT_EVERY)) -eq 0 ]; then
               notify "Masih hunting Batam (attempt #$ATTEMPT, run jalan). Terakhir: ${MSG:-unknown}"
             fi
-            sleep 60
+            sleep 180
           done
           notify "Run 5.5 jam selesai (${ATTEMPT}x attempt, belum dapat). Run berikutnya lanjut otomatis."
           echo "no capacity after $ATTEMPT attempts"
