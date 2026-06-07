@@ -1,10 +1,14 @@
 name: Try to Create OCI VM
-# It will run every 5 minutes.
+# Loop-retry tiap 60 detik per run (maks ~25 menit), heartbeat Discord tiap ~10 menit.
 on:
   schedule:
     - cron: "*/5 * * * *"
-  # Allows you to manually run this workflow from the Actions tab
   workflow_dispatch:
+
+concurrency:
+  group: oci-create-vm
+  cancel-in-progress: false
+
 env:
   COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
   IMAGE_ID: "ocid1.image.oc1.ap-batam-1.aaaaaaaaedlako7qbzghuptwkdplqthztwmfseqmk4qa7kefjhwwbxh5nbcq"
@@ -19,30 +23,19 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
-      - name: Cache pip packages
-        id: cache-pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.local
-          key: ${{ runner.os }}-pip-oci-cli-v1
-
       - name: Add OCI CLI to path
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Setup OCI CLI and Try to Create VM
-        id: create_vm
-        # This forces the job to succeed so the cache will save.
-        continue-on-error: true 
+      - name: Setup OCI CLI and Loop-Create VM
         run: |
           set -o pipefail
-
-          pip install oci-cli
+          pip install oci-cli -q
 
           mkdir -p ~/.oci
           echo "${{ secrets.OCI_CLI_KEY_CONTENT }}" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
-
           echo "[DEFAULT]" > ~/.oci/config
           echo "user=${{ secrets.OCI_CLI_USER }}" >> ~/.oci/config
           echo "tenancy=${{ secrets.OCI_CLI_TENANCY }}" >> ~/.oci/config
@@ -51,46 +44,36 @@ jobs:
           echo "region=${{ env.OCI_CLI_REGION }}" >> ~/.oci/config
           echo "${{ secrets.SSH_PUBLIC_KEY }}" > /home/runner/my_ssh_key.pub
 
-          # Run the command, capture ALL output, and use '|| true' to prevent the script from exiting early.
-          OCI_OUTPUT=$(oci compute instance launch \
-            --compartment-id "$COMPARTMENT_ID" \
-            --availability-domain "$AD_NAME" \
-            --shape "VM.Standard.A1.Flex" \
-            --shape-config '{"ocpus":1,"memoryInGBs":6}' \
-            --subnet-id "$SUBNET_ID" \
-            --image-id "$IMAGE_ID" \
-            --ssh-authorized-keys-file "/home/runner/my_ssh_key.pub" \
-            --assign-public-ip true \
-            --display-name "coolify-vm" \
-            --boot-volume-size-in-gbs 50 2>&1 || true)
+          WEBHOOK="${{ secrets.DISCORD_WEBHOOK_URL }}"
+          notify() { curl -s -H "Content-Type: application/json" -X POST -d "$(jq -nc --arg c "$1" '{content:$c}')" "$WEBHOOK" >/dev/null 2>&1 || true; }
 
-          # Store the log as a GitHub step output
-          echo "log_data<<EOF" >> $GITHUB_OUTPUT
-          echo "$OCI_OUTPUT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-          # Check the log content for an error string.
-          if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
-            echo "Success! 'PROVISIONING' state found in output."
-            exit 0
-          else
-            echo "Error: Success string not found in OCI output. Failing the step."
-            exit 1
-          fi
-
-      - name: Send Discord Notification
-        if: steps.create_vm.outcome == 'success'
-        uses: sarisia/actions-status-discord@v1.15.4
-        with:
-          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          title: "OCI VM Status: ${{ steps.create_vm.outcome }}"
-          status: ${{ steps.create_vm.outcome }}
-          color: ${{ steps.create_vm.outcome == 'success' && '0x28a745' || '0xdc3545' }}
-          description: |
-            Attempt to create A1.Flex VM.
-            **Status:** `${{ steps.create_vm.outcome }}`
-
-            **Log Output:**
-            ```json
-            ${{ steps.create_vm.outputs.log_data }}
-            ```
+          MAX_MIN=25
+          HEARTBEAT_EVERY=10
+          ATTEMPT=0
+          END=$(( $(date +%s) + MAX_MIN*60 ))
+          while [ "$(date +%s)" -lt "$END" ]; do
+            ATTEMPT=$((ATTEMPT+1))
+            OUT=$(oci compute instance launch \
+              --compartment-id "$COMPARTMENT_ID" \
+              --availability-domain "$AD_NAME" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config '{"ocpus":1,"memoryInGBs":6}' \
+              --subnet-id "$SUBNET_ID" \
+              --image-id "$IMAGE_ID" \
+              --ssh-authorized-keys-file "/home/runner/my_ssh_key.pub" \
+              --assign-public-ip true \
+              --display-name "daily-pass" \
+              --boot-volume-size-in-gbs 50 2>&1 || true)
+            if echo "$OUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
+              notify "BERHASIL! Instance ARM Batam ke-create (attempt #$ATTEMPT). Buka OCI Console, cek Public IP, lalu MATIKAN workflow ini."
+              echo "SUCCESS at attempt $ATTEMPT"
+              exit 0
+            fi
+            MSG=$(echo "$OUT" | grep -o '"message": "[^"]*"' | head -1 | sed 's/"message": //; s/"//g')
+            if [ $((ATTEMPT % HEARTBEAT_EVERY)) -eq 0 ]; then
+              notify "Masih hunting kapasitas Batam (attempt #$ATTEMPT, run masih jalan). Terakhir: ${MSG:-unknown}"
+            fi
+            sleep 60
+          done
+          notify "Run selesai (${ATTEMPT}x attempt, belum dapat slot). Run berikutnya lanjut otomatis."
+          echo "no capacity this run after $ATTEMPT attempts"
